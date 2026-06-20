@@ -95,18 +95,6 @@ function showScreen(screen) {
     if (modeArGround) modeArGround.classList.remove('active');
     if (modeArLocked) modeArLocked.classList.remove('active');
     
-    // Shut down WebXR if active and switching away
-    if (screen !== 'ar_ground' && isWebXRActive && xrSession) {
-        xrSession.end();
-    }
-    
-    // Disable fallback pointer events
-    if (threejsContainer) threejsContainer.classList.remove('interactive');
-    
-    // Hide recalibrate button if not in ar_ground
-    const btnRecalibrate = document.getElementById('btn_recalibrate_ground');
-    if (btnRecalibrate) btnRecalibrate.style.display = 'none';
-    
     resetCamera();
     
     // Manage ThreeJS container visibility
@@ -132,14 +120,8 @@ function showScreen(screen) {
     if(screen === 'ar_ground' && modeArGround) modeArGround.classList.add('active');
     if(screen === 'ar_locked' && modeArLocked) modeArLocked.classList.add('active');
     
-    // Reset placements when showing a screen
     if (screen === 'ar_ground') {
         isModelPlaced = false;
-        if (loadedModel) loadedModel.visible = false;
-        if (fallbackReticle) fallbackReticle.visible = true;
-    } else {
-        if (fallbackReticle) fallbackReticle.visible = false;
-        if (webxrReticle) webxrReticle.visible = false;
     }
     
     currentMode = screen;
@@ -412,9 +394,6 @@ function initThreeJs() {
     renderer.outputEncoding = THREE.sRGBEncoding;
     threejsContainer.appendChild(renderer.domElement);
 
-    createReticles();
-    setupFallbackInteraction();
-
     // Better Lighting to see shape clearly
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
     scene.add(hemiLight);
@@ -618,6 +597,7 @@ function animateThreeJs(timestamp, frame) {
             currentModelZ += (targetModelZ - currentModelZ) * 0.08;
             
             currentQuaternion.slerp(targetQuaternion, 0.04); // Extra-smooth slow rotation tracking to remove any rotation shaking
+            currentQuaternion.slerp(targetQuaternion, 0.04);
             currentScale += (targetScale - currentScale) * 0.08;
         }
         
@@ -632,18 +612,67 @@ function animateThreeJs(timestamp, frame) {
     }
 }
 
-// --- WebXR & Fallback Mode Setup Helpers ---
-function createReticles() {
-    // WebXR Reticle (Ring)
-    const ringGeom = new THREE.RingGeometry(0.15, 0.2, 32);
-    ringGeom.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide });
-    webxrReticle = new THREE.Mesh(ringGeom, ringMat);
-    webxrReticle.matrixAutoUpdate = false;
-    webxrReticle.visible = false;
-    scene.add(webxrReticle);
+window.addEventListener('mousedown', (e) => {
+    if (currentMode === 'ar_ground') {
+        isTouching = true;
+        touchStartX = e.clientX;
+    }
+});
+window.addEventListener('mousemove', (e) => {
+    if (currentMode === 'ar_ground' && isTouching) {
+        const deltaX = e.clientX - touchStartX;
+        placedRotationY += deltaX * 0.01;
+        loadedModel.rotation.set(0, placedRotationY, 0);
+        touchStartX = e.clientX;
+    }
+});
+window.addEventListener('mouseup', () => {
+    isTouching = false;
+});
 
-    // Fallback Reticle (Ring)
+window.addEventListener('touchstart', (e) => {
+    if (currentMode === 'ar_ground' && e.touches.length === 1) {
+        isTouching = true;
+        touchStartX = e.touches[0].clientX;
+    } else if (e.touches.length === 2 && isModelPlaced) {
+        isTouching = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchStartDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        const slider = document.getElementById('groundScaleSlider');
+        touchStartScale = slider ? parseFloat(slider.value) : loadedModel.scale.x;
+    }
+});
+window.addEventListener('touchmove', (e) => {
+    if (currentMode === 'ar_ground' && e.touches.length === 1 && isTouching && isModelPlaced && loadedModel) {
+        const deltaX = e.touches[0].clientX - touchStartX;
+        placedRotationY += deltaX * 0.01;
+        loadedModel.rotation.set(0, placedRotationY, 0);
+        touchStartX = e.touches[0].clientX;
+    } else if (e.touches.length === 2 && isModelPlaced && loadedModel) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (touchStartDistance > 0) {
+            const factor = dist / touchStartDistance;
+            let newScale = touchStartScale * factor;
+            newScale = Math.max(0.1, Math.min(3.0, newScale));
+            
+            const slider = document.getElementById('groundScaleSlider');
+            if (slider) {
+                slider.value = newScale.toFixed(2);
+            }
+            loadedModel.scale.set(newScale, newScale, newScale);
+        }
+    }
+});
+window.addEventListener('touchend', () => {
+    isTouching = false;
+    touchStartDistance = 0;
+});
+
+function createReticles() {
     const fallbackGeom = new THREE.RingGeometry(0.15, 0.2, 32);
     fallbackGeom.rotateX(-Math.PI / 2);
     const fallbackMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide, opacity: 0.6, transparent: true });
@@ -652,78 +681,14 @@ function createReticles() {
     scene.add(fallbackReticle);
 }
 
-async function startWebXRSession() {
-    try {
-        const session = await navigator.xr.requestSession('immersive-ar', {
-            requiredFeatures: ['local-floor', 'hit-test']
-        });
-        
-        xrSession = session;
-        isWebXRActive = true;
-        renderer.xr.enabled = true;
-        await renderer.xr.setSession(session);
-        
-        session.addEventListener('end', onXRSessionEnded);
-        session.addEventListener('select', onXRSelect);
-        
-        const refSpaceViewer = await session.requestReferenceSpace('viewer');
-        xrHitTestSource = await session.requestHitTestSource({ space: refSpaceViewer });
-        xrLocalRefSpace = await session.requestReferenceSpace('local-floor');
-        
-        updateStatus('تم تفعيل الواقع المعزز الحقيقي. ابدأ بمسح الأرض.', 'ready');
-        
-        if (loadedModel) {
-            loadedModel.visible = false; 
-        }
-    } catch (e) {
-        console.error("Failed to start WebXR session: ", e);
-        startSensorFallbackAR();
-    }
-}
-
-function onXRSessionEnded() {
-    xrSession = null;
-    isWebXRActive = false;
-    xrHitTestSource = null;
-    xrLocalRefSpace = null;
-    renderer.xr.enabled = false;
-    if (webxrReticle) webxrReticle.visible = false;
-    showScreen('home');
-}
-
-function onXRSelect() {
-    if (webxrReticle && webxrReticle.visible && loadedModel) {
-        const position = new THREE.Vector3();
-        const quaternion = new THREE.Quaternion();
-        const scale = new THREE.Vector3();
-        
-        webxrReticle.matrix.decompose(position, quaternion, scale);
-        
-        loadedModel.position.copy(position);
-        loadedModel.quaternion.copy(quaternion);
-        
-        const slider = document.getElementById('groundScaleSlider');
-        const scaleVal = slider ? parseFloat(slider.value) : 1.0;
-        loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
-        
-        loadedModel.visible = true;
-        updateStatus('تم تثبيت المجسم على الأرض!', 'ready');
-    }
-}
-
 function startSensorFallbackAR() {
-    isWebXRActive = false;
-    renderer.xr.enabled = false;
     isModelPlaced = false;
     
-    // Enable pointer events on the container to allow touches
     if (threejsContainer) threejsContainer.classList.add('interactive');
     
-    // Show recalibrate button
     const btnRecalibrate = document.getElementById('btn_recalibrate_ground');
     if (btnRecalibrate) btnRecalibrate.style.display = 'block';
     
-    // Setup video facingMode
     if (currentFacingMode !== 'environment') {
         currentFacingMode = 'environment';
         updateVideoMirror();
@@ -732,7 +697,6 @@ function startSensorFallbackAR() {
         startWebcam();
     }
     
-    // Request permission for DeviceOrientation on iOS/Android
     requestOrientationPermission();
     
     updateStatus('وجّه الهاتف للأسفل للأرض، واضغط على الشاشة لتثبيت المجسم.', 'ready');
@@ -758,81 +722,6 @@ function requestOrientationPermission() {
     }
 }
 
-function setupFallbackInteraction() {
-    const dom = renderer.domElement;
-    
-    dom.addEventListener('mousedown', onPointerDown);
-    dom.addEventListener('mousemove', onPointerMove);
-    dom.addEventListener('mouseup', onPointerUp);
-    
-    dom.addEventListener('touchstart', onTouchStart, { passive: false });
-    dom.addEventListener('touchmove', onTouchMove, { passive: false });
-    dom.addEventListener('touchend', onTouchEnd);
-}
-
-function onPointerDown(e) {
-    if (currentMode !== 'ar_ground' || isWebXRActive) return;
-    
-    if (!isModelPlaced) {
-        if (fallbackReticle && fallbackReticle.visible && loadedModel) {
-            placedPosition.copy(fallbackReticle.position);
-            
-            loadedModel.position.copy(placedPosition);
-            loadedModel.rotation.set(0, placedRotationY, 0); 
-            loadedModel.visible = true;
-            isModelPlaced = true;
-            fallbackReticle.visible = false;
-            updateStatus('تم تثبيت المجسم! اسحب لتدويره، أو استعمل الشريط لتغيير الحجم.', 'ready');
-        }
-    } else {
-        isTouching = true;
-        touchStartX = e.clientX;
-        touchStartY = e.clientY;
-    }
-}
-
-function onPointerMove(e) {
-    if (!isTouching || currentMode !== 'ar_ground' || isWebXRActive || !loadedModel || !isModelPlaced) return;
-    
-    const deltaX = e.clientX - touchStartX;
-    placedRotationY += deltaX * 0.01;
-    loadedModel.rotation.set(0, placedRotationY, 0);
-    
-    touchStartX = e.clientX;
-}
-
-function onPointerUp() {
-    isTouching = false;
-}
-
-function onTouchStart(e) {
-    if (currentMode !== 'ar_ground' || isWebXRActive) return;
-    
-    // Prevent default scroll/zoom on page
-    e.preventDefault();
-    
-    if (e.touches.length === 1) {
-        if (!isModelPlaced) {
-            if (fallbackReticle && fallbackReticle.visible && loadedModel) {
-                placedPosition.copy(fallbackReticle.position);
-                loadedModel.position.copy(placedPosition);
-                loadedModel.rotation.set(0, placedRotationY, 0);
-                loadedModel.visible = true;
-                isModelPlaced = true;
-                fallbackReticle.visible = false;
-                updateStatus('تم تثبيت المجسم! اسحب بإصبعك لتدويره.', 'ready');
-            }
-        } else {
-            isTouching = true;
-            touchStartX = e.touches[0].clientX;
-            touchStartY = e.touches[0].clientY;
-        }
-    } else if (e.touches.length === 2 && isModelPlaced) {
-        isTouching = false;
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        touchStartDistance = Math.sqrt(dx * dx + dy * dy);
-        
         const slider = document.getElementById('groundScaleSlider');
         touchStartScale = slider ? parseFloat(slider.value) : loadedModel.scale.x;
     }
