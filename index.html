@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تتبع اليد: رسم وثلاثي الأبعاد</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- On-screen error logger for compile/runtime/promise errors -->
+    <script>
+        function logErrorToScreen(message, source, lineno) {
+            const errorDiv = document.getElementById('debug-error-console') || document.createElement('div');
+            errorDiv.id = 'debug-error-console';
+            errorDiv.style.position = 'fixed';
+            errorDiv.style.bottom = '10px';
+            errorDiv.style.left = '10px';
+            errorDiv.style.right = '10px';
+            errorDiv.style.background = 'rgba(220, 38, 38, 0.95)';
+            errorDiv.style.color = 'white';
+            errorDiv.style.padding = '12px';
+            errorDiv.style.borderRadius = '8px';
+            errorDiv.style.zIndex = '10000';
+            errorDiv.style.fontSize = '12px';
+            errorDiv.style.fontFamily = 'monospace';
+            errorDiv.style.maxHeight = '150px';
+            errorDiv.style.overflowY = 'auto';
+            errorDiv.style.border = '1px solid #fca5a5';
+            
+            const existingText = errorDiv.innerText;
+            const newError = "Error: " + message + (source ? "\nAt: " + source + ":" + lineno : "");
+            errorDiv.innerText = existingText ? existingText + "\n---\n" + newError : newError;
+            document.body.appendChild(errorDiv);
+        }
+
+        window.addEventListener('error', function(e) {
+            logErrorToScreen(e.message, e.filename, e.lineno);
+        });
+
+        window.addEventListener('unhandledrejection', function(e) {
+            const reason = e.reason || {};
+            logErrorToScreen("Promise Rejection: " + (reason.message || reason) + (reason.stack ? "\nStack: " + reason.stack : ""), "", "");
+        });
+    </script>
+    
+    <!-- MediaPipe dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Three.js dependencies -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Hidden video element for webcam -->
+        <video id="webcam" class="default-hidden-video" autoplay playsinline muted></video>
+        
+        <!-- Home Screen -->
+        <div id="home_screen" class="screen active">
+            <div class="glass-panel text-center">
+                <h1>مرحباً بك!</h1>
+                <p>اختر الوضع الذي ترغب بتجربته باستخدام كاميرا الويب وتتبع اليد</p>
+                <div class="btn-group mt-4">
+                    <button id="btn_drawing" class="btn btn-large">🎨 وضع الرسم</button>
+                    <button id="btn_3d" class="btn btn-large">🧊 وضع 3D</button>
+                    <button id="btn_ar" class="btn btn-large">🌐 وضع الواقع المعزز (AR)</button>
+                    <button id="btn_ar_ground" class="btn btn-large">📍 وضع التثبيت الأرضي (Static AR)</button>
+                    <button id="btn_ar_locked" class="btn btn-large">🔒 وضع التثبيت باليد (Locked AR)</button>
+                </div>
+                <div id="status_home" class="status-indicator mt-4" style="display:none;"></div>
+            </div>
+        </div>
+
+        <!-- Drawing Mode -->
+        <div id="drawing_mode" class="screen">
+            <!-- Canvas to display the drawing -->
+            <canvas id="output_canvas"></canvas>
+
+            <!-- Cursor for index finger -->
+            <div id="cursor" style="position: absolute; width: 20px; height: 20px; border: 2px solid #00ffcc; border-radius: 50%; pointer-events: none; transform: translate(-50%, -50%); display: none; z-index: 5;"></div>
+
+            <!-- Glassmorphism control panel -->
+            <div class="controls panel-glass">
+                <h2>لوحة التحكم</h2>
+                <div class="control-group">
+                    <label for="colorPicker">لون الرسم:</label>
+                    <input type="color" id="colorPicker" value="#00ffcc">
+                </div>
+                <div class="control-group">
+                    <label for="lineWidth">حجم الخط:</label>
+                    <input type="range" id="lineWidth" min="1" max="20" value="5">
+                </div>
+                <button id="clearBtn" class="btn">مسح الشاشة</button>
+                <button id="back_from_drawing" class="btn btn-secondary mt-2">العودة للرئيسية</button>
+                <div id="status_drawing" class="status-indicator loading">جاري تحميل الكاميرا...</div>
+            </div>
+        </div>
+
+        <!-- 3D Mode -->
+        <div id="3d_mode" class="screen">
+            <div class="controls panel-glass">
+                <h2>تحكم 3D</h2>
+                <p style="font-size: 0.9rem; margin-bottom: 10px;">حرّك راحة يدك لتحريك المجسم. قم بضم يدك بشكل قبضة لإخفائه مؤقتاً.</p>
+                <button id="back_from_3d" class="btn btn-secondary">العودة للرئيسية</button>
+                <div id="status_3d" class="status-indicator loading">جاري تحميل الكاميرا...</div>
+            </div>
+        </div>
+
+        <!-- AR Mode -->
+        <div id="ar_mode" class="screen">
+            <div class="controls panel-glass">
+                <h2>الواقع المعزز (AR)</h2>
+                <p style="font-size: 0.9rem; margin-bottom: 10px;">امسك المجسم بيدك في العالم الحقيقي!</p>
+                <button id="back_from_ar" class="btn btn-secondary mt-2">العودة للرئيسية</button>
+                <div id="status_ar" class="status-indicator loading mt-2">جاري تحميل الكاميرا...</div>
+            </div>
+        </div>
+
+        <!-- AR Ground Mode -->
+        <div id="ar_ground_mode" class="screen">
+            <div class="controls panel-glass">
+                <h2>التثبيت الأرضي (Static AR)</h2>
+                <p style="font-size: 0.9rem; margin-bottom: 10px;">تحرك بهاتفك لرؤية المجسم مثبتًا في الغرفة من كل الاتجاهات.</p>
+                
+                <div class="control-group">
+                    <label for="groundScaleSlider">حجم المجسم:</label>
+                    <input type="range" id="groundScaleSlider" min="0.1" max="3.0" step="0.05" value="1.0">
+                </div>
+                
+                <button id="back_from_ar_ground" class="btn btn-secondary mt-2">العودة للرئيسية</button>
+                <div id="status_ar_ground" class="status-indicator loading mt-2">جاري تحميل الكاميرا...</div>
+            </div>
+        </div>
+
+        <!-- AR Locked Mode -->
+        <div id="ar_locked_mode" class="screen">
+            <div class="controls panel-glass">
+                <h2>التثبيت باليد (Locked AR)</h2>
+                <p style="font-size: 0.9rem; margin-bottom: 10px;">المجسم مثبت في كف يدك تماماً ويتحرك معها بدون أي اهتزاز أو تأخير.</p>
+                <button id="back_from_ar_locked" class="btn btn-secondary mt-2">العودة للرئيسية</button>
+                <div id="status_ar_locked" class="status-indicator loading mt-2">جاري تحميل الكاميرا...</div>
+            </div>
+        </div>
+        
+        <!-- Shared Container for Three.js Canvas -->
+        <div id="threejs_container"></div>
+    </div>
+
+    <!-- Main Logic -->
+    <script src="hand_tracker.js?v=1"></script>
+</body>
+</html>
