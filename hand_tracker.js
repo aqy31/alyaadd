@@ -183,7 +183,33 @@ if (btnAr) {
 
 if (btnArGround) {
     btnArGround.addEventListener('click', () => {
-        window.location.href = 'ar.html';
+        if (videoElement) videoElement.play().catch(() => {});
+        // Default to back camera for Ground AR mode
+        if (currentFacingMode !== 'environment') {
+            currentFacingMode = 'environment';
+            updateVideoMirror();
+            startWebcam(true);
+        } else if (!isWebcamStarted) {
+            startWebcam();
+        }
+        
+        // Request permission for DeviceOrientation on iOS
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+            DeviceOrientationEvent.requestPermission()
+                .then(response => {
+                    if (response === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation);
+                    }
+                })
+                .catch(err => {
+                    console.error("DeviceOrientation permission rejected:", err);
+                });
+        } else {
+            window.addEventListener('deviceorientation', handleOrientation);
+        }
+        
+        showScreen('ar_ground');
+        if (!isThreeJsInitialized) initThreeJs();
     });
 }
 
