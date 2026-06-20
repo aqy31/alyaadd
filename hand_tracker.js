@@ -565,29 +565,24 @@ function animateThreeJs(timestamp, frame) {
                 camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
             }
             
-            // In fallback mode, the model is immediately placed and visible on screen!
+            // In fallback mode, model is only visible AFTER being placed
             if (loadedModel) {
-                loadedModel.visible = true;
+                loadedModel.visible = isModelPlaced;
                 
-                // Align inner group upright!
-                const aligner = loadedModel.children[0];
-                if (aligner) {
-                    aligner.rotation.set(0, 0, 0);
+                if (isModelPlaced) {
+                    // Restore original rotation so it looks exactly as it did in the hand
+                    const aligner = loadedModel.children[0];
+                    if (aligner && typeof handRotationX !== 'undefined') {
+                        aligner.rotation.set(handRotationX, handRotationY, handRotationZ);
+                    }
+                    
+                    loadedModel.position.copy(placedPosition);
+                    loadedModel.rotation.set(0, placedRotationY, 0);
+                    
+                    const slider = document.getElementById('groundScaleSlider');
+                    const scaleVal = slider ? parseFloat(slider.value) : 1.0;
+                    loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
                 }
-                
-                // Initialize default position if not set
-                if (!isModelPlaced) {
-                    placedPosition.set(0, -1.5, -4);
-                    placedRotationY = 0;
-                    isModelPlaced = true;
-                }
-                
-                loadedModel.position.copy(placedPosition);
-                loadedModel.rotation.set(0, placedRotationY, 0);
-                
-                const slider = document.getElementById('groundScaleSlider');
-                const scaleVal = slider ? parseFloat(slider.value) : 1.0;
-                loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
             }
             
             renderer.render(scene, camera);
@@ -640,8 +635,15 @@ function animateThreeJs(timestamp, frame) {
 
 window.addEventListener('mousedown', (e) => {
     if (currentMode === 'ar_ground') {
-        isTouching = true;
-        touchStartX = e.clientX;
+        if (!isModelPlaced) {
+            placedPosition.set(0, -1.5, -4);
+            placedRotationY = 0;
+            isModelPlaced = true;
+            updateStatus('تم تثبيت المجسم بنجاح! يمكنك تدويره وتكبيره.', 'ready');
+        } else {
+            isTouching = true;
+            touchStartX = e.clientX;
+        }
     }
 });
 window.addEventListener('mousemove', (e) => {
@@ -658,8 +660,15 @@ window.addEventListener('mouseup', () => {
 
 window.addEventListener('touchstart', (e) => {
     if (currentMode === 'ar_ground' && e.touches.length === 1) {
-        isTouching = true;
-        touchStartX = e.touches[0].clientX;
+        if (!isModelPlaced) {
+            placedPosition.set(0, -1.5, -4);
+            placedRotationY = 0;
+            isModelPlaced = true;
+            updateStatus('تم تثبيت المجسم بنجاح! يمكنك تدويره وتكبيره.', 'ready');
+        } else {
+            isTouching = true;
+            touchStartX = e.touches[0].clientX;
+        }
     } else if (e.touches.length === 2 && isModelPlaced) {
         isTouching = false;
         const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -745,11 +754,6 @@ function requestOrientationPermission() {
             });
     } else {
         window.addEventListener('deviceorientation', handleOrientation);
-    }
-}
-
-        const slider = document.getElementById('groundScaleSlider');
-        touchStartScale = slider ? parseFloat(slider.value) : loadedModel.scale.x;
     }
 }
 
