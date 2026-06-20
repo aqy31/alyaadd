@@ -46,6 +46,27 @@ function handleOrientation(event) {
     deviceOrientation = event;
 }
 
+// --- WebXR & AR Ground State Variables ---
+let isXRSupported = false;
+let xrSession = null;
+let xrHitTestSource = null;
+let xrLocalRefSpace = null;
+let xrViewerSpace = null;
+let isWebXRActive = false;
+let webxrReticle = null;
+
+// Fallback Mode state
+let fallbackReticle = null;
+let isModelPlaced = false;
+let placedPosition = new THREE.Vector3(0, -1.5, -4);
+let placedRotationY = 0;
+let fallbackYawOffset = 0; // for recalibration
+let touchStartDistance = 0;
+let touchStartScale = 1.0;
+let isTouching = false;
+let touchStartX = 0;
+let touchStartY = 0;
+
 function resetCamera() {
     if (camera) {
         camera.position.set(0, 0, 10);
@@ -68,6 +89,18 @@ function showScreen(screen) {
     modeAr.classList.remove('active');
     if (modeArGround) modeArGround.classList.remove('active');
     if (modeArLocked) modeArLocked.classList.remove('active');
+    
+    // Shut down WebXR if active and switching away
+    if (screen !== 'ar_ground' && isWebXRActive && xrSession) {
+        xrSession.end();
+    }
+    
+    // Disable fallback pointer events
+    if (threejsContainer) threejsContainer.classList.remove('interactive');
+    
+    // Hide recalibrate button if not in ar_ground
+    const btnRecalibrate = document.getElementById('btn_recalibrate_ground');
+    if (btnRecalibrate) btnRecalibrate.style.display = 'none';
     
     resetCamera();
     
@@ -93,6 +126,16 @@ function showScreen(screen) {
     if(screen === 'ar' && modeAr) modeAr.classList.add('active');
     if(screen === 'ar_ground' && modeArGround) modeArGround.classList.add('active');
     if(screen === 'ar_locked' && modeArLocked) modeArLocked.classList.add('active');
+    
+    // Reset placements when showing a screen
+    if (screen === 'ar_ground') {
+        isModelPlaced = false;
+        if (loadedModel) loadedModel.visible = false;
+        if (fallbackReticle) fallbackReticle.visible = true;
+    } else {
+        if (fallbackReticle) fallbackReticle.visible = false;
+        if (webxrReticle) webxrReticle.visible = false;
+    }
     
     currentMode = screen;
 }
@@ -153,33 +196,7 @@ if (btnAr) {
 
 if (btnArGround) {
     btnArGround.addEventListener('click', () => {
-        if (videoElement) videoElement.play().catch(() => {});
-        // Default to back camera for Ground AR mode
-        if (currentFacingMode !== 'environment') {
-            currentFacingMode = 'environment';
-            updateVideoMirror();
-            startWebcam(true);
-        } else if (!isWebcamStarted) {
-            startWebcam();
-        }
-        
-        // Request permission for DeviceOrientation on iOS
-        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-            DeviceOrientationEvent.requestPermission()
-                .then(response => {
-                    if (response === 'granted') {
-                        window.addEventListener('deviceorientation', handleOrientation);
-                    }
-                })
-                .catch(err => {
-                    console.error("DeviceOrientation permission rejected:", err);
-                });
-        } else {
-            window.addEventListener('deviceorientation', handleOrientation);
-        }
-        
-        showScreen('ar_ground');
-        if (!isThreeJsInitialized) initThreeJs();
+        window.location.href = 'ar.html';
     });
 }
 
@@ -390,6 +407,9 @@ function initThreeJs() {
     renderer.outputEncoding = THREE.sRGBEncoding;
     threejsContainer.appendChild(renderer.domElement);
 
+    createReticles();
+    setupFallbackInteraction();
+
     // Better Lighting to see shape clearly
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
     scene.add(hemiLight);
@@ -472,45 +492,84 @@ function initThreeJs() {
     );
 
     window.addEventListener('resize', () => {
-        if(currentMode === '3d' || currentMode === 'ar' || currentMode === 'ar_locked') {
+        if(currentMode === '3d' || currentMode === 'ar' || currentMode === 'ar_ground' || currentMode === 'ar_locked') {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
     });
 
-    animateThreeJs();
+    renderer.setAnimationLoop(animateThreeJs);
 }
 
-function animateThreeJs() {
-    requestAnimationFrame(animateThreeJs);
-    
+function animateThreeJs(timestamp, frame) {
     const is3dMode = currentMode === '3d' || currentMode === 'ar' || currentMode === 'ar_locked';
     
     if (currentMode === 'ar_ground') {
-        if (loadedModel) {
-            loadedModel.visible = true;
-            loadedModel.position.set(0, -1.5, -4);
-            loadedModel.quaternion.set(0, 0, 0, 1);
+        if (isWebXRActive && frame) {
+            // --- WebXR Render Path ---
+            if (xrHitTestSource && xrLocalRefSpace) {
+                const hitTestResults = frame.getHitTestResults(xrHitTestSource);
+                if (hitTestResults.length > 0) {
+                    const hit = hitTestResults[0];
+                    const pose = hit.getPose(xrLocalRefSpace);
+                    
+                    if (webxrReticle) {
+                        webxrReticle.visible = true;
+                        webxrReticle.matrix.fromArray(pose.transform.matrix);
+                    }
+                } else {
+                    if (webxrReticle) webxrReticle.visible = false;
+                }
+            }
             
-            const slider = document.getElementById('groundScaleSlider');
-            const scaleVal = slider ? parseFloat(slider.value) : 1.0;
-            loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
-        }
-        
-        camera.position.set(0, 0, 0); // Position camera at origin for look-around
-        
-        if (deviceOrientation) {
-            const pitch = THREE.MathUtils.degToRad(deviceOrientation.beta - 90);
-            const yaw = THREE.MathUtils.degToRad(deviceOrientation.alpha);
-            const roll = THREE.MathUtils.degToRad(deviceOrientation.gamma);
+            renderer.render(scene, camera);
+        } else {
+            // --- Fallback Render Path (No WebXR) ---
+            camera.position.set(0, 0, 0);
             
-            const euler = new THREE.Euler();
-            euler.set(pitch, yaw, roll, 'YXZ');
-            camera.quaternion.setFromEuler(euler);
+            if (deviceOrientation) {
+                const alpha = deviceOrientation.alpha ? THREE.MathUtils.degToRad(deviceOrientation.alpha - fallbackYawOffset) : 0;
+                const beta = deviceOrientation.beta ? THREE.MathUtils.degToRad(deviceOrientation.beta) : 0;
+                const gamma = deviceOrientation.gamma ? THREE.MathUtils.degToRad(deviceOrientation.gamma) : 0;
+                const orient = window.orientation ? THREE.MathUtils.degToRad(window.orientation) : 0;
+                
+                const euler = new THREE.Euler();
+                const q0 = new THREE.Quaternion();
+                const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+                const zee = new THREE.Vector3(0, 0, 1);
+                
+                euler.set(beta, alpha, -gamma, 'YXZ');
+                camera.quaternion.setFromEuler(euler);
+                camera.quaternion.multiply(q1);
+                camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
+            }
+            
+            // Update fallback reticle position (Raycast to ground plane y = -1.5)
+            if (!isModelPlaced) {
+                const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                if (dir.y < -0.1) {
+                    const t = -1.5 / dir.y;
+                    const intersectionPoint = dir.clone().multiplyScalar(t);
+                    if (fallbackReticle) {
+                        fallbackReticle.visible = true;
+                        fallbackReticle.position.copy(intersectionPoint);
+                        fallbackReticle.rotation.set(-Math.PI / 2, 0, 0);
+                    }
+                } else {
+                    if (fallbackReticle) fallbackReticle.visible = false;
+                }
+            }
+            
+            // Adjust scale and position of loadedModel dynamically
+            if (loadedModel && isModelPlaced) {
+                const slider = document.getElementById('groundScaleSlider');
+                const scaleVal = slider ? parseFloat(slider.value) : 1.0;
+                loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
+            }
+            
+            renderer.render(scene, camera);
         }
-        
-        renderer.render(scene, camera);
     } else if (loadedModel && is3dMode && loadedModel.visible) {
         if (currentMode === 'ar_locked') {
             // Rigidly lock position and rotation instantly (no float lag!)
@@ -548,6 +607,258 @@ function animateThreeJs() {
         wasModelVisible = false;
         renderer.render(scene, camera);
     }
+}
+
+// --- WebXR & Fallback Mode Setup Helpers ---
+function createReticles() {
+    // WebXR Reticle (Ring)
+    const ringGeom = new THREE.RingGeometry(0.15, 0.2, 32);
+    ringGeom.rotateX(-Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide });
+    webxrReticle = new THREE.Mesh(ringGeom, ringMat);
+    webxrReticle.matrixAutoUpdate = false;
+    webxrReticle.visible = false;
+    scene.add(webxrReticle);
+
+    // Fallback Reticle (Ring)
+    const fallbackGeom = new THREE.RingGeometry(0.15, 0.2, 32);
+    fallbackGeom.rotateX(-Math.PI / 2);
+    const fallbackMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide, opacity: 0.6, transparent: true });
+    fallbackReticle = new THREE.Mesh(fallbackGeom, fallbackMat);
+    fallbackReticle.visible = false;
+    scene.add(fallbackReticle);
+}
+
+async function startWebXRSession() {
+    try {
+        const session = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['local-floor', 'hit-test']
+        });
+        
+        xrSession = session;
+        isWebXRActive = true;
+        renderer.xr.enabled = true;
+        await renderer.xr.setSession(session);
+        
+        session.addEventListener('end', onXRSessionEnded);
+        session.addEventListener('select', onXRSelect);
+        
+        const refSpaceViewer = await session.requestReferenceSpace('viewer');
+        xrHitTestSource = await session.requestHitTestSource({ space: refSpaceViewer });
+        xrLocalRefSpace = await session.requestReferenceSpace('local-floor');
+        
+        updateStatus('تم تفعيل الواقع المعزز الحقيقي. ابدأ بمسح الأرض.', 'ready');
+        
+        if (loadedModel) {
+            loadedModel.visible = false; 
+        }
+    } catch (e) {
+        console.error("Failed to start WebXR session: ", e);
+        startSensorFallbackAR();
+    }
+}
+
+function onXRSessionEnded() {
+    xrSession = null;
+    isWebXRActive = false;
+    xrHitTestSource = null;
+    xrLocalRefSpace = null;
+    renderer.xr.enabled = false;
+    if (webxrReticle) webxrReticle.visible = false;
+    showScreen('home');
+}
+
+function onXRSelect() {
+    if (webxrReticle && webxrReticle.visible && loadedModel) {
+        const position = new THREE.Vector3();
+        const quaternion = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        
+        webxrReticle.matrix.decompose(position, quaternion, scale);
+        
+        loadedModel.position.copy(position);
+        loadedModel.quaternion.copy(quaternion);
+        
+        const slider = document.getElementById('groundScaleSlider');
+        const scaleVal = slider ? parseFloat(slider.value) : 1.0;
+        loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
+        
+        loadedModel.visible = true;
+        updateStatus('تم تثبيت المجسم على الأرض!', 'ready');
+    }
+}
+
+function startSensorFallbackAR() {
+    isWebXRActive = false;
+    renderer.xr.enabled = false;
+    isModelPlaced = false;
+    
+    // Enable pointer events on the container to allow touches
+    if (threejsContainer) threejsContainer.classList.add('interactive');
+    
+    // Show recalibrate button
+    const btnRecalibrate = document.getElementById('btn_recalibrate_ground');
+    if (btnRecalibrate) btnRecalibrate.style.display = 'block';
+    
+    // Setup video facingMode
+    if (currentFacingMode !== 'environment') {
+        currentFacingMode = 'environment';
+        updateVideoMirror();
+        startWebcam(true);
+    } else if (!isWebcamStarted) {
+        startWebcam();
+    }
+    
+    // Request permission for DeviceOrientation on iOS/Android
+    requestOrientationPermission();
+    
+    updateStatus('وجّه الهاتف للأسفل للأرض، واضغط على الشاشة لتثبيت المجسم.', 'ready');
+    
+    if (loadedModel) {
+        loadedModel.visible = false;
+    }
+}
+
+function requestOrientationPermission() {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+            .then(response => {
+                if (response === 'granted') {
+                    window.addEventListener('deviceorientation', handleOrientation);
+                }
+            })
+            .catch(err => {
+                console.error("DeviceOrientation permission rejected:", err);
+            });
+    } else {
+        window.addEventListener('deviceorientation', handleOrientation);
+    }
+}
+
+function setupFallbackInteraction() {
+    const dom = renderer.domElement;
+    
+    dom.addEventListener('mousedown', onPointerDown);
+    dom.addEventListener('mousemove', onPointerMove);
+    dom.addEventListener('mouseup', onPointerUp);
+    
+    dom.addEventListener('touchstart', onTouchStart, { passive: false });
+    dom.addEventListener('touchmove', onTouchMove, { passive: false });
+    dom.addEventListener('touchend', onTouchEnd);
+}
+
+function onPointerDown(e) {
+    if (currentMode !== 'ar_ground' || isWebXRActive) return;
+    
+    if (!isModelPlaced) {
+        if (fallbackReticle && fallbackReticle.visible && loadedModel) {
+            placedPosition.copy(fallbackReticle.position);
+            
+            loadedModel.position.copy(placedPosition);
+            loadedModel.rotation.set(0, placedRotationY, 0); 
+            loadedModel.visible = true;
+            isModelPlaced = true;
+            fallbackReticle.visible = false;
+            updateStatus('تم تثبيت المجسم! اسحب لتدويره، أو استعمل الشريط لتغيير الحجم.', 'ready');
+        }
+    } else {
+        isTouching = true;
+        touchStartX = e.clientX;
+        touchStartY = e.clientY;
+    }
+}
+
+function onPointerMove(e) {
+    if (!isTouching || currentMode !== 'ar_ground' || isWebXRActive || !loadedModel || !isModelPlaced) return;
+    
+    const deltaX = e.clientX - touchStartX;
+    placedRotationY += deltaX * 0.01;
+    loadedModel.rotation.set(0, placedRotationY, 0);
+    
+    touchStartX = e.clientX;
+}
+
+function onPointerUp() {
+    isTouching = false;
+}
+
+function onTouchStart(e) {
+    if (currentMode !== 'ar_ground' || isWebXRActive) return;
+    
+    // Prevent default scroll/zoom on page
+    e.preventDefault();
+    
+    if (e.touches.length === 1) {
+        if (!isModelPlaced) {
+            if (fallbackReticle && fallbackReticle.visible && loadedModel) {
+                placedPosition.copy(fallbackReticle.position);
+                loadedModel.position.copy(placedPosition);
+                loadedModel.rotation.set(0, placedRotationY, 0);
+                loadedModel.visible = true;
+                isModelPlaced = true;
+                fallbackReticle.visible = false;
+                updateStatus('تم تثبيت المجسم! اسحب بإصبعك لتدويره.', 'ready');
+            }
+        } else {
+            isTouching = true;
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        }
+    } else if (e.touches.length === 2 && isModelPlaced) {
+        isTouching = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchStartDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        const slider = document.getElementById('groundScaleSlider');
+        touchStartScale = slider ? parseFloat(slider.value) : loadedModel.scale.x;
+    }
+}
+
+function onTouchMove(e) {
+    if (currentMode !== 'ar_ground' || isWebXRActive) return;
+    e.preventDefault();
+    
+    if (e.touches.length === 1 && isTouching && isModelPlaced && loadedModel) {
+        const deltaX = e.touches[0].clientX - touchStartX;
+        placedRotationY += deltaX * 0.01;
+        loadedModel.rotation.set(0, placedRotationY, 0);
+        touchStartX = e.touches[0].clientX;
+    } else if (e.touches.length === 2 && isModelPlaced && loadedModel) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (touchStartDistance > 0) {
+            const factor = dist / touchStartDistance;
+            let newScale = touchStartScale * factor;
+            newScale = Math.max(0.1, Math.min(3.0, newScale));
+            
+            const slider = document.getElementById('groundScaleSlider');
+            if (slider) {
+                slider.value = newScale.toFixed(2);
+            }
+            loadedModel.scale.set(newScale, newScale, newScale);
+        }
+    }
+}
+
+function onTouchEnd() {
+    isTouching = false;
+    touchStartDistance = 0;
+}
+
+// Recalibrate Button Listener
+const btnRecalibrateElement = document.getElementById('btn_recalibrate_ground');
+if (btnRecalibrateElement) {
+    btnRecalibrateElement.addEventListener('click', () => {
+        if (deviceOrientation) {
+            fallbackYawOffset = deviceOrientation.alpha || 0;
+            isModelPlaced = false;
+            if (loadedModel) loadedModel.visible = false;
+            if (fallbackReticle) fallbackReticle.visible = true;
+            updateStatus('تمت إعادة المعايرة. وجه الكاميرا ثم اضغط لوضع المجسم.', 'ready');
+        }
+    });
 }
 
 function handle3DMode(landmarks) {

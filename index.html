@@ -120,13 +120,14 @@
         <div id="ar_ground_mode" class="screen">
             <div class="controls panel-glass">
                 <h2>التثبيت الأرضي (Static AR)</h2>
-                <p style="font-size: 0.9rem; margin-bottom: 10px;">تحرك بهاتفك لرؤية المجسم مثبتًا في الغرفة من كل الاتجاهات.</p>
+                <p id="ar_ground_info" style="font-size: 0.9rem; margin-bottom: 5px;">وجه الكاميرا للأرض لمسحها، ثم <b>اضغط على الشاشة لتثبيت المجسم</b>.</p>
                 
                 <div class="control-group">
                     <label for="groundScaleSlider">حجم المجسم:</label>
                     <input type="range" id="groundScaleSlider" min="0.1" max="3.0" step="0.05" value="1.0">
                 </div>
                 
+                <button id="btn_recalibrate_ground" class="btn btn-secondary" style="display: none;">إعادة معايرة الاتجاه 🔄</button>
                 <button id="back_from_ar_ground" class="btn btn-secondary mt-2">العودة للرئيسية</button>
                 <div id="status_ar_ground" class="status-indicator loading mt-2">جاري تحميل الكاميرا...</div>
             </div>
