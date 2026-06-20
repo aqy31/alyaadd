@@ -67,6 +67,11 @@ let isTouching = false;
 let touchStartX = 0;
 let touchStartY = 0;
 
+// Hand rotation variables for restoring hand tracking rotation
+let handRotationX = 0;
+let handRotationY = 0;
+let handRotationZ = 0;
+
 function resetCamera() {
     if (camera) {
         camera.position.set(0, 0, 10);
@@ -479,6 +484,11 @@ function initThreeJs() {
             wrapper.add(aligner);
             wrapper.visible = false;
             
+            // Save initial hand rotation for restoration when switching modes
+            handRotationX = aligner.rotation.x;
+            handRotationY = aligner.rotation.y;
+            handRotationZ = aligner.rotation.z;
+            
             scene.add(wrapper);
             loadedModel = wrapper; 
 
@@ -508,6 +518,11 @@ function animateThreeJs(timestamp, frame) {
     if (currentMode === 'ar_ground') {
         if (isWebXRActive && frame) {
             // --- WebXR Render Path ---
+            if (loadedModel) {
+                loadedModel.visible = true;
+                const aligner = loadedModel.children[0];
+                if (aligner) aligner.rotation.set(0, 0, 0);
+            }
             if (xrHitTestSource && xrLocalRefSpace) {
                 const hitTestResults = frame.getHitTestResults(xrHitTestSource);
                 if (hitTestResults.length > 0) {
@@ -545,24 +560,26 @@ function animateThreeJs(timestamp, frame) {
                 camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
             }
             
-            // Update fallback reticle position (Raycast to ground plane y = -1.5)
-            if (!isModelPlaced) {
-                const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-                if (dir.y < -0.1) {
-                    const t = -1.5 / dir.y;
-                    const intersectionPoint = dir.clone().multiplyScalar(t);
-                    if (fallbackReticle) {
-                        fallbackReticle.visible = true;
-                        fallbackReticle.position.copy(intersectionPoint);
-                        fallbackReticle.rotation.set(-Math.PI / 2, 0, 0);
-                    }
-                } else {
-                    if (fallbackReticle) fallbackReticle.visible = false;
+            // In fallback mode, the model is immediately placed and visible on screen!
+            if (loadedModel) {
+                loadedModel.visible = true;
+                
+                // Align inner group upright!
+                const aligner = loadedModel.children[0];
+                if (aligner) {
+                    aligner.rotation.set(0, 0, 0);
                 }
-            }
-            
-            // Adjust scale and position of loadedModel dynamically
-            if (loadedModel && isModelPlaced) {
+                
+                // Initialize default position if not set
+                if (!isModelPlaced) {
+                    placedPosition.set(0, -1.5, -4);
+                    placedRotationY = 0;
+                    isModelPlaced = true;
+                }
+                
+                loadedModel.position.copy(placedPosition);
+                loadedModel.rotation.set(0, placedRotationY, 0);
+                
                 const slider = document.getElementById('groundScaleSlider');
                 const scaleVal = slider ? parseFloat(slider.value) : 1.0;
                 loadedModel.scale.set(scaleVal, scaleVal, scaleVal);
@@ -571,6 +588,12 @@ function animateThreeJs(timestamp, frame) {
             renderer.render(scene, camera);
         }
     } else if (loadedModel && is3dMode && loadedModel.visible) {
+        // Restore hand rotation to inner aligner!
+        const aligner = loadedModel.children[0];
+        if (aligner && typeof handRotationX !== 'undefined') {
+            aligner.rotation.set(handRotationX, handRotationY, handRotationZ);
+        }
+        
         if (currentMode === 'ar_locked') {
             // Rigidly lock position and rotation instantly (no float lag!)
             currentModelX = targetModelX;
